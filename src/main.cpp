@@ -251,6 +251,41 @@ bool is_inactive() {
     return true;
 }
 
+void draw_status_indicators(HANDLE console_handle, bool paused, bool active, COORD pos) {
+    static const char *status_paused    = " PAUSED         ";
+    static const char *status_active    = " ACTIVE         ";
+    static const char *status_idle      = " IDLE           ";
+    static const char *status_empty     = "                ";
+
+    struct _CONSOLE_SCREEN_BUFFER_INFO screen_buffer_info;
+    ::GetConsoleScreenBufferInfo(console_handle, &screen_buffer_info);
+
+    if (paused) {
+        SetConsoleTextAttribute(console_handle, BACKGROUND_RED);
+        SetConsoleCursorPosition(console_handle, { pos.X, (SHORT)(pos.Y + 1) });
+        ::WriteConsoleA(console_handle, status_paused, strlen(status_paused), NULL, NULL);
+    }
+    else {
+        SetConsoleTextAttribute(console_handle, screen_buffer_info.wAttributes);
+        SetConsoleCursorPosition(console_handle, { pos.X, (SHORT)(pos.Y + 1) });
+        ::WriteConsoleA(console_handle, status_empty, strlen(status_empty), NULL, NULL); 
+    }
+
+
+    if (active) {
+        SetConsoleTextAttribute(console_handle, BACKGROUND_GREEN);
+        SetConsoleCursorPosition(console_handle, { pos.X, (SHORT)(pos.Y + 0) });
+        ::WriteConsoleA(console_handle, status_active, strlen(status_active), NULL, NULL);
+    }
+    else {
+        SetConsoleTextAttribute(console_handle, BACKGROUND_GREEN | BACKGROUND_RED);
+        SetConsoleCursorPosition(console_handle, { pos.X, (SHORT)(pos.Y + 0) });
+        ::WriteConsoleA(console_handle, status_idle, strlen(status_idle), NULL, NULL); 
+    }
+
+    SetConsoleTextAttribute(console_handle, screen_buffer_info.wAttributes);
+}
+
 void on_exit(HANDLE console_handle, SHORT width, SHORT height) {
     for (SHORT y = 0; y < height; ++y) {
         for (SHORT x = 0; x < width; ++x) {
@@ -389,6 +424,8 @@ int main(int argc, char *argv[]) {
         
         draw_large_text(buffer, front, { 3, 3 });
         update_screen(console_handle, back, front, force_update);
+
+        draw_status_indicators(console_handle, paused, inactivity_counter < 5000, { 75, 3 }); 
 
         save_timer_context(&context);
 

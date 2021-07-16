@@ -1,0 +1,3 @@
+#define ConsoleClock_VERSION_MAJOR @ConsoleClock_VERSION_MAJOR@
+#define ConsoleClock_VERSION_MINOR @ConsoleClock_VERSION_MINOR@
+

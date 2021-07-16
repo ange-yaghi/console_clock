@@ -260,6 +260,7 @@ void on_exit(HANDLE console_handle, SHORT width, SHORT height) {
     }
 
     SetConsoleCursorPosition(console_handle, { 0, 0 });
+    show_cursor(console_handle, true);
 }
 
 int main(int argc, char *argv[]) {

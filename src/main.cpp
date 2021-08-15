@@ -5,10 +5,13 @@
 #include <string.h>
 #include <time.h>
 #include <conio.h>
+#include <thread>
+#include <mutex>
 
 #include <Windows.h>
 
 #include <console_clock.h>
+#include "../include/file_manager.h"
 
 static const DWORD default_color =
     FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED | FOREGROUND_INTENSITY;
@@ -17,6 +20,13 @@ struct screen_buffer {
     char *c;
     DWORD *attributes;
     COORD size;
+};
+
+struct line_information {
+    std::string settings_path;
+    line_count lc;
+    std::mutex m;
+    std::atomic_bool kill;
 };
 
 static screen_buffer
@@ -52,6 +62,7 @@ struct screen_buffer *get_glyph(char c) {
 struct timer_context {
     char *profile;
     unsigned int seconds_elapsed;
+    unsigned int last_lc_write;
 };
 
 void init_buffer(screen_buffer *buffer, SHORT width, SHORT height) {
@@ -251,15 +262,16 @@ void load_timer_context(struct timer_context *context) {
 
     if (fp == NULL) {
         context->seconds_elapsed = 0;
-        return;
     }
-    
-    fscanf(fp, "%u", &context->seconds_elapsed);
+    else {
+        fscanf(fp, "%u", &context->seconds_elapsed);
+        fclose(fp);
+    }
 
-    fclose(fp);
+    context->last_lc_write = context->seconds_elapsed;
 }
 
-void save_timer_context(struct timer_context *context) {   
+void save_timer_context(struct timer_context *context, line_count *lc, bool lc_valid) {   
     char fname[256];
     sprintf(fname, "./workspace/timer_%s.txt", context->profile);
 
@@ -270,6 +282,18 @@ void save_timer_context(struct timer_context *context) {
 
     fprintf(fp, "%u", context->seconds_elapsed);
     fclose(fp);
+
+    if (context->seconds_elapsed - context->last_lc_write >= 10 && lc_valid) {
+        context->last_lc_write = context->seconds_elapsed;
+        sprintf(fname, "./workspace/line_count_%s.txt", context->profile);
+        fp = fopen(fname, "a");
+        fprintf(fp,
+                "%u\t%d\t%d\n",
+                context->seconds_elapsed,
+                lc->line_count,
+                lc->raw_line_count);
+        fclose(fp);
+    }
 }
 
 void get_screen_size(HANDLE console_handle, int *width, int *height) {
@@ -325,6 +349,7 @@ void draw_status_indicators(
         bool paused,
         bool active,
         bool single_line,
+        line_count *lc,
         COORD pos)
 {
     static const char *status_paused    = " PAUSED         ";
@@ -336,7 +361,9 @@ void draw_status_indicators(
     const COORD pos_0_1 = { pos.X, (SHORT)(pos.Y + 1) }; 
     const COORD pos_1_0 = { (SHORT)(pos.X + 32), pos.Y };
     const COORD pos_2_0 = { (SHORT)(pos.X + 32 + 16), pos.Y };
-    const COORD pos_0_2 = { pos.X, (SHORT)(pos.Y + 1) };
+    const COORD pos_0_2 = { pos.X, (SHORT)(pos.Y + 2) };
+    const COORD pos_0_3 = { pos.X, (SHORT)(pos.Y + 3) };
+    const COORD pos_3_0 = { (SHORT)(pos.X + 32 + 32) };
 
     const COORD pos_0 = pos;
     const COORD pos_1 = single_line
@@ -345,6 +372,9 @@ void draw_status_indicators(
     const COORD pos_2 = single_line
         ? pos_2_0
         : pos_0_2;
+    const COORD pos_3 = single_line
+        ? pos_3_0
+        : pos_0_3;
 
     if (paused) {
         ::draw_text(status_paused, target, pos_2, BACKGROUND_RED);
@@ -368,13 +398,13 @@ void draw_status_indicators(
     const char *am_pm = (time_data.tm_hour >= 12)
         ? "PM"
         : "AM";
-    const int hour = (time_data.tm_hour == 12)
+    const int hour = (time_data.tm_hour % 12 == 0)
         ? 12
-        : (time_data.tm_hour + 12) % 24;
+        : time_data.tm_hour % 12;
 
     sprintf(
             current_time,
-            "%s %s %d, %d | %d:%d %s",
+            "%s %s %d, %d | %d:%02d %s",
             get_weekday(time_data.tm_wday),
             get_month(time_data.tm_mon),
             time_data.tm_mday,
@@ -384,7 +414,9 @@ void draw_status_indicators(
             am_pm);
 
     ::draw_text(current_time, target, pos_0, default_color);
-
+    
+    sprintf(current_time, "[%d/%d]", lc->line_count, lc->raw_line_count);
+    ::draw_text(current_time, target, pos_3, default_color);
 }
 
 void on_exit(HANDLE console_handle, SHORT width, SHORT height) {
@@ -399,6 +431,20 @@ void on_exit(HANDLE console_handle, SHORT width, SHORT height) {
     show_cursor(console_handle, true);
 }
 
+void line_count_thread(line_information *info) {
+    while (!info->kill) {
+        lc_settings settings;
+        read_settings(&settings, info->settings_path.c_str());
+
+        {
+            std::unique_lock<std::mutex> lock(info->m);
+            count_all(&info->lc, &settings);
+        }
+
+        Sleep(1000);
+    }
+}
+
 int main(int argc, char *argv[]) {
     char profile[256];
     char root_path[256];
@@ -407,7 +453,7 @@ int main(int argc, char *argv[]) {
         ::strcpy(root_path, argv[1]);
     }
     else {
-        ::strcpy(root_path, "");
+        ::strcpy(root_path, "../");
     }
 
     if (argc >= 3) {
@@ -416,6 +462,13 @@ int main(int argc, char *argv[]) {
     else {
         ::strcpy(profile, "default");
     }
+
+    line_information li;
+    li.lc.line_count = li.lc.raw_line_count = -1;
+    li.kill = false;
+    li.settings_path = "./workspace/lc.txt";
+
+    std::thread *lc_thread = new std::thread(&line_count_thread, &li);
 
     const int timeout_period_ms = 5 * 60 * 1000;
     const int refresh_period_ms = 100;
@@ -428,8 +481,6 @@ int main(int argc, char *argv[]) {
 
     screen_buffer buffer_0;
     screen_buffer buffer_1;
-
-    screen_buffer char_0;
 
     load_characters(root_path);
 
@@ -459,6 +510,13 @@ int main(int argc, char *argv[]) {
     int inactivity_counter = 0;
 
     while (running) {
+        // Retrieve line count information
+        line_count lc;
+        {
+            std::unique_lock<std::mutex> lck(li.m);
+            lc = li.lc;
+        }
+
         bool force_update = false;
         int new_screen_width, new_screen_height;
         get_screen_size(console_handle, &new_screen_width, &new_screen_height);
@@ -562,17 +620,21 @@ int main(int argc, char *argv[]) {
                 paused,
                 inactivity_counter < 5000,
                 is_inline,
+                &lc,
                 { (SHORT)(right_edge + 1), (is_inline) ? (SHORT)0 : (SHORT)3 }); 
 
         update_screen(console_handle, back, front, force_update);
 
-        save_timer_context(&context);
+        save_timer_context(&context, &lc, lc.line_count != -1);
 
         Sleep(refresh_period_ms);
     }
 
     on_exit(console_handle, screen_width, screen_height);
 
+    li.kill = true;
+    lc_thread->join();
+    delete lc_thread;
+
     return 0;
 }
-

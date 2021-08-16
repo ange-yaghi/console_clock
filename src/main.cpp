@@ -436,9 +436,12 @@ void line_count_thread(line_information *info) {
         lc_settings settings;
         read_settings(&settings, info->settings_path.c_str());
 
+        line_count lc;
+        count_all(&lc, &settings);
+
         {
             std::unique_lock<std::mutex> lock(info->m);
-            count_all(&info->lc, &settings);
+            info->lc = lc;
         }
 
         Sleep(1000);

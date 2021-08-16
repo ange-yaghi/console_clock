@@ -23,9 +23,9 @@ struct screen_buffer {
 };
 
 struct line_information {
-    std::string settings_path;
     line_count lc;
-    std::mutex m;
+    std::mutex lc_lock;
+    std::string settings_path;
     std::atomic_bool kill;
 };
 
@@ -77,8 +77,8 @@ void free_buffer(screen_buffer *buffer) {
 }
 
 void clear_buffer(screen_buffer *buffer, char c) {
-    SHORT width = buffer->size.X;
-    SHORT height = buffer->size.Y;
+    const SHORT width = buffer->size.X;
+    const SHORT height = buffer->size.Y;
 
     for (SHORT y = 0; y < height; ++y) {
         for (SHORT x = 0; x < width; ++x) {
@@ -89,8 +89,7 @@ void clear_buffer(screen_buffer *buffer, char c) {
 }
 
 size_t stripped_len(const char *s) {
-    size_t length = 0;
-    for (; s[length] != NULL; ++length) {
+    for (size_t length = 0; s[length] != NULL; ++length) {
         if (s[length] == '\r' || s[length] == '\n') {
             return length;
         }
@@ -211,11 +210,11 @@ void draw_text(
 }
 
 void blit(screen_buffer *target, screen_buffer *buffer, COORD pos) {
-    SHORT width = buffer->size.X;
-    SHORT height = buffer->size.Y;
+    const SHORT width = buffer->size.X;
+    const SHORT height = buffer->size.Y;
 
-    SHORT t_width = target->size.X;
-    SHORT t_height = target->size.Y;
+    const SHORT t_width = target->size.X;
+    const SHORT t_height = target->size.Y;
 
     for (SHORT y = 0; y < height; ++y) {
         for (SHORT x = 0; x < width; ++x) {
@@ -440,7 +439,7 @@ void line_count_thread(line_information *info) {
         count_all(&lc, &settings);
 
         {
-            std::unique_lock<std::mutex> lock(info->m);
+            std::unique_lock<std::mutex> lock(info->lc_lock);
             info->lc = lc;
         }
 
@@ -516,7 +515,7 @@ int main(int argc, char *argv[]) {
         // Retrieve line count information
         line_count lc;
         {
-            std::unique_lock<std::mutex> lck(li.m);
+            std::unique_lock<std::mutex> lck(li.lc_lock);
             lc = li.lc;
         }
 

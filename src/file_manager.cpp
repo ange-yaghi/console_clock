@@ -1,21 +1,18 @@
 #include "../include/file_manager.h"
 
-#include <sstream>
 #include <filesystem>
+#include <sstream>
 
 void read_settings(lc_settings *settings, const char *fname) {
-    std::fstream f(fname, std::ios::in); 
+    std::fstream f(fname, std::ios::in);
     if (!f.is_open()) {
-        settings->directories = { "include/", "src/" };
-        settings->file_extensions = { ".h", ".cpp" };
+        settings->directories = {"include/", "src/"};
+        settings->file_extensions = {".h", ".cpp"};
 
         return;
     }
 
-    enum class mode {
-        directory,
-        extension
-    };
+    enum class mode { directory, extension };
 
     mode current_mode = mode::directory;
 
@@ -23,11 +20,9 @@ void read_settings(lc_settings *settings, const char *fname) {
     while (std::getline(f, line)) {
         if (line == "-Directories") {
             current_mode = mode::directory;
-        }
-        else if (line == "-Extensions") {
+        } else if (line == "-Extensions") {
             current_mode = mode::extension;
-        }
-        else {
+        } else {
             std::stringstream ss(line);
             std::string arg;
 
@@ -35,9 +30,8 @@ void read_settings(lc_settings *settings, const char *fname) {
             if (arg.empty()) continue;
 
             if (current_mode == mode::directory) {
-                settings->directories.push_back(arg);        
-            }
-            else if (current_mode == mode::extension) {
+                settings->directories.push_back(arg);
+            } else if (current_mode == mode::extension) {
                 settings->file_extensions.push_back(arg);
             }
         }
@@ -63,7 +57,7 @@ size_t read_line(std::istream &stream, char **buffer, size_t buffer_size) {
     if (se) {
         for (size_t i = 0;; ++i) {
             if (i == buffer_size - 2) {
-                char *new_buffer = new char [buffer_size * 2];
+                char *new_buffer = new char[buffer_size * 2];
                 memcpy(new_buffer, target, buffer_size);
                 delete[] target;
 
@@ -72,7 +66,7 @@ size_t read_line(std::istream &stream, char **buffer, size_t buffer_size) {
             }
 
             const int c = sb->sbumpc();
-            switch(c) {
+            switch (c) {
                 case '\n':
                     target[i] = '\0';
                     return buffer_size;
@@ -88,8 +82,7 @@ size_t read_line(std::istream &stream, char **buffer, size_t buffer_size) {
                     (*buffer)[i] = static_cast<char>(c);
             }
         }
-    }
-    else {
+    } else {
         return buffer_size;
     }
 }
@@ -101,7 +94,7 @@ void init_line_count(line_count *lc) {
 
 void count_lines(line_count *lc, const char *fname) {
     std::fstream file(fname, std::ios::in);
-    
+
     int raw_line_count = 0;
     int line_count = 0;
 
@@ -129,15 +122,15 @@ void count_lines(line_count *lc, const char *fname) {
     lc->raw_line_count += raw_line_count;
 }
 
-void count_lines_dir(line_count *lc, lc_settings *settings, const char *directory) {
+void count_lines_dir(line_count *lc, lc_settings *settings,
+                     const char *directory) {
     std::string path = directory;
     if (!std::filesystem::exists(std::filesystem::path(directory))) return;
 
     for (const auto &entry : std::filesystem::directory_iterator(path)) {
         if (entry.is_directory()) {
             count_lines_dir(lc, settings, entry.path().string().c_str());
-        }
-        else if (entry.is_regular_file()) {
+        } else if (entry.is_regular_file()) {
             std::filesystem::path p = entry.path().extension();
             if (check_extension(settings, p.string().c_str())) {
                 count_lines(lc, entry.path().string().c_str());

@@ -1,7 +1,11 @@
+#include <algorithm>
 #include <assert.h>
 #include <conio.h>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,7 +14,9 @@
 
 #include <Windows.h>
 
+#include "../include/executable_listener.h"
 #include "../include/file_manager.h"
+#include "../include/settings.h"
 #include <console_clock.h>
 
 static const DWORD default_color = FOREGROUND_BLUE | FOREGROUND_GREEN |
@@ -22,10 +28,21 @@ struct screen_buffer {
     COORD size;
 };
 
-struct line_information {
-    line_count lc;
-    std::mutex lc_lock;
-    std::string settings_path;
+struct State {
+    struct Data {
+        int rawLineCount = -1;
+        int lineCount = -1;
+
+        bool applicationRunning = false;
+        bool applicationFocused = false;
+        bool toolRunning = false;
+        bool toolFocused = false;
+        std::string toolName = "";
+    } data;
+
+    std::string settingsPath = "";
+    std::string rootPath = "";
+    std::mutex lock;
     std::atomic_bool kill;
 };
 
@@ -248,9 +265,10 @@ void show_cursor(HANDLE console_handle, bool show = true) {
     SetConsoleCursorInfo(console_handle, &info);
 }
 
-void load_timer_context(struct timer_context *context) {
+void load_timer_context(struct timer_context *context, std::string_view root) {
     char fname[256];
-    sprintf(fname, "./workspace/timer_%s.txt", context->profile);
+    sprintf(fname, (std::string(root) + "/clock/timer_%s.txt").c_str(),
+            context->profile);
 
     FILE *fp = fopen(fname, "r");
 
@@ -264,10 +282,11 @@ void load_timer_context(struct timer_context *context) {
     context->last_lc_write = context->seconds_elapsed;
 }
 
-void save_timer_context(struct timer_context *context, line_count *lc,
-                        bool lc_valid) {
+void save_timer_context(struct timer_context *context, int rawLineCount,
+                        int lineCount, bool lc_valid, std::string_view root) {
     char fname[256];
-    sprintf(fname, "./workspace/timer_%s.txt", context->profile);
+    sprintf(fname, (std::string(root) + "/clock/timer_%s.txt").c_str(),
+            context->profile);
 
     FILE *fp = fopen(fname, "w");
     if (fp == NULL) { return; }
@@ -276,11 +295,18 @@ void save_timer_context(struct timer_context *context, line_count *lc,
     fclose(fp);
 
     if (context->seconds_elapsed - context->last_lc_write >= 10 && lc_valid) {
+        std::time_t t = std::time(nullptr);
+        std::tm tm = *std::localtime(&t);
+
+        std::stringstream buffer;
+        buffer << std::put_time(&tm, "%d-%m-%Y %H:%M:%S");
+
         context->last_lc_write = context->seconds_elapsed;
-        sprintf(fname, "./workspace/line_count_%s.txt", context->profile);
+        sprintf(fname, (std::string(root) + "/clock/line_count_%s.txt").c_str(),
+                context->profile);
         fp = fopen(fname, "a");
-        fprintf(fp, "%u\t%d\t%d\n", context->seconds_elapsed, lc->line_count,
-                lc->raw_line_count);
+        fprintf(fp, "%s\t%u\t%d\t%d\n", buffer.str().c_str(),
+                context->seconds_elapsed, lineCount, rawLineCount);
         fclose(fp);
     }
 }
@@ -292,9 +318,15 @@ void get_screen_size(HANDLE console_handle, int *width, int *height) {
     *height = screen_info.srWindow.Bottom - screen_info.srWindow.Top + 1;
 }
 
-bool is_inactive() {
+bool is_inactive(const POINT &lastMouse, POINT *newMouse) {
     for (int i = 0; i < 255; ++i) {
         if ((GetAsyncKeyState(i) & 0x1) != 0) { return false; }
+    }
+
+    if (GetCursorPos(newMouse)) {
+        if (newMouse->x != lastMouse.x && newMouse->y != lastMouse.y) {
+            return false;
+        }
     }
 
     return true;
@@ -352,13 +384,17 @@ const char *get_weekday(int i) {
     }
 }
 
-void draw_status_indicators(struct screen_buffer *target, bool paused,
-                            bool active, bool single_line, line_count *lc,
+void draw_status_indicators(struct screen_buffer *target, bool single_line,
+                            bool paused, State::Data &state, bool active,
                             COORD pos) {
     static const char *status_paused = " PAUSED         ";
     static const char *status_active = " ACTIVE         ";
     static const char *status_idle = " IDLE           ";
+    static const char *status_app_running = " APP RUNNING    ";
+    static const char *status_app_testing = " APP TESTING    ";
     static const char *status_empty = "                ";
+
+    const DWORD BACKGROUND_ORANGE = BACKGROUND_GREEN | BACKGROUND_RED;
 
     const COORD pos_0_0 = pos;
     const COORD pos_0_1 = {pos.X, (SHORT) (pos.Y + 1)};
@@ -366,16 +402,42 @@ void draw_status_indicators(struct screen_buffer *target, bool paused,
     const COORD pos_2_0 = {(SHORT) (pos.X + 32 + 16), pos.Y};
     const COORD pos_0_2 = {pos.X, (SHORT) (pos.Y + 2)};
     const COORD pos_0_3 = {pos.X, (SHORT) (pos.Y + 3)};
-    const COORD pos_3_0 = {(SHORT) (pos.X + 32 + 32)};
+    const COORD pos_3_0 = {(SHORT) (pos.X + 32 * 2)};
+    const COORD pos_0_4 = {pos.X, (SHORT) (pos.Y + 4)};
+    const COORD pos_4_0 = {(SHORT) (pos.X + 32 * 3)};
+    const COORD pos_0_5 = {pos.X, (SHORT) (pos.Y + 5)};
+    const COORD pos_5_0 = {(SHORT) (pos.X + 32 * 4)};
 
     const COORD pos_0 = pos;
     const COORD pos_1 = single_line ? pos_1_0 : pos_0_1;
     const COORD pos_2 = single_line ? pos_2_0 : pos_0_2;
     const COORD pos_3 = single_line ? pos_3_0 : pos_0_3;
+    const COORD pos_4 = single_line ? pos_4_0 : pos_0_4;
+    const COORD pos_5 = single_line ? pos_5_0 : pos_0_5;
 
-    if (paused) { ::draw_text(status_paused, target, pos_2, BACKGROUND_RED); }
+    if (state.applicationFocused) {
+        ::draw_text(status_app_running, target, pos_2, BACKGROUND_GREEN);
+    } else if (state.applicationRunning) {
+        ::draw_text(status_app_running, target, pos_2, BACKGROUND_ORANGE);
+    }
 
-    if (active) {
+    if (state.toolRunning) {
+        std::string uppercaseToolName = state.toolName;
+        std::transform(uppercaseToolName.begin(), uppercaseToolName.end(),
+                       uppercaseToolName.begin(), ::toupper);
+        std::stringstream ss;
+        ss << " " << std::left << std::setfill(' ') << std::setw(15)
+           << uppercaseToolName;
+        if (state.toolFocused) {
+            ::draw_text(ss.str().c_str(), target, pos_3, BACKGROUND_GREEN);
+        } else {
+            ::draw_text(ss.str().c_str(), target, pos_3, BACKGROUND_ORANGE);
+        }
+    }
+
+    if (paused) {
+        ::draw_text(status_paused, target, pos_1, BACKGROUND_RED);
+    } else if (active) {
         ::draw_text(status_active, target, pos_1, BACKGROUND_BLUE);
     } else {
         ::draw_text(status_idle, target, pos_1,
@@ -397,8 +459,8 @@ void draw_status_indicators(struct screen_buffer *target, bool paused,
 
     ::draw_text(current_time, target, pos_0, default_color);
 
-    sprintf(current_time, "[%d/%d]", lc->line_count, lc->raw_line_count);
-    ::draw_text(current_time, target, pos_3, default_color);
+    sprintf(current_time, "[%d/%d]", state.lineCount, state.rawLineCount);
+    ::draw_text(current_time, target, pos_4, default_color);
 }
 
 void on_exit(HANDLE console_handle, SHORT width, SHORT height) {
@@ -413,17 +475,27 @@ void on_exit(HANDLE console_handle, SHORT width, SHORT height) {
     show_cursor(console_handle, true);
 }
 
-void line_count_thread(line_information *info) {
+void line_count_thread(State *info) {
     while (!info->kill) {
-        lc_settings settings;
-        read_settings(&settings, info->settings_path.c_str());
+        Settings settings;
+        settings.readFromFile(info->settingsPath, info->rootPath);
 
-        line_count lc;
-        count_all(&lc, &settings);
+        LineCounter lineCounter;
+        lineCounter.countLines(&settings);
+
+        ExecutableListener executableListener;
+        ExecutableListener::State executableState;
+        executableListener.updateState(&settings, &executableState);
 
         {
-            std::unique_lock<std::mutex> lock(info->lc_lock);
-            info->lc = lc;
+            std::lock_guard lk(info->lock);
+            info->data.rawLineCount = lineCounter.rawLineCount();
+            info->data.lineCount = lineCounter.lineCount();
+            info->data.applicationRunning = executableState.executableRunning;
+            info->data.applicationFocused = executableState.executableFocused;
+            info->data.toolFocused = executableState.toolFocused;
+            info->data.toolRunning = executableState.toolRunning;
+            info->data.toolName = executableState.toolName;
         }
 
         Sleep(1000);
@@ -437,7 +509,11 @@ int main(int argc, char *argv[]) {
     if (argc >= 2) {
         ::strcpy(root_path, argv[1]);
     } else {
-        ::strcpy(root_path, "../");
+        if (std::filesystem::exists("../clock")) {
+            ::strcpy(root_path, "../");
+        } else {
+            ::strcpy(root_path, "../../");
+        }
     }
 
     if (argc >= 3) {
@@ -446,14 +522,26 @@ int main(int argc, char *argv[]) {
         ::strcpy(profile, "default");
     }
 
-    line_information li;
-    li.lc.line_count = li.lc.raw_line_count = -1;
+    {
+        ExecutableListener executableListener;
+        if (executableListener.applicationRunning("ConsoleClock.exe")) {
+            return -1;
+        }
+    }
+
+    State li;
+    li.data.rawLineCount = li.data.lineCount = -1;
+    li.data.applicationFocused = false;
+    li.data.applicationRunning = false;
+    li.data.toolFocused = false;
+    li.data.toolRunning = false;
     li.kill = false;
-    li.settings_path = "./workspace/lc.txt";
+    li.settingsPath = "./clock/lc.txt";
+    li.rootPath = root_path;
 
     std::thread *lc_thread = new std::thread(&line_count_thread, &li);
 
-    const int timeout_period_ms = 5 * 60 * 1000;
+    const int timeout_period_ms = 1 * 60 * 1000;
     const int refresh_period_ms = 100;
 
     HANDLE console_handle = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -465,7 +553,18 @@ int main(int argc, char *argv[]) {
     screen_buffer buffer_0;
     screen_buffer buffer_1;
 
-    load_characters(root_path);
+    char modulePathBuffer[1024];
+    GetModuleFileName(NULL, modulePathBuffer, 1024);
+    std::filesystem::path modulePath(modulePathBuffer);
+
+    if (std::filesystem::exists(
+                modulePath.parent_path().append("../resources"))) {
+        load_characters(
+                (std::string(modulePath.parent_path().string()) + "/../")
+                        .c_str());
+    } else {
+        load_characters("../");
+    }
 
     init_buffer(&buffer_0, screen_width, screen_height);
     init_buffer(&buffer_1, screen_width, screen_height);
@@ -475,7 +574,7 @@ int main(int argc, char *argv[]) {
 
     struct timer_context context;
     context.profile = profile;
-    load_timer_context(&context);
+    load_timer_context(&context, root_path);
 
     struct screen_buffer *back = &buffer_0;
     struct screen_buffer *front = &buffer_1;
@@ -491,24 +590,31 @@ int main(int argc, char *argv[]) {
     bool show_seconds = true;
 
     int inactivity_counter = 0;
+    POINT lastMouse, nextMouse;
+    GetCursorPos(&lastMouse);
 
     while (running) {
-        // Retrieve line count information
-        line_count lc;
+        State::Data state;
         {
-            std::unique_lock<std::mutex> lck(li.lc_lock);
-            lc = li.lc;
+            std::lock_guard lk(li.lock);
+            state = li.data;
         }
+
+        // Retrieve line count information
+        const int rawLineCount = state.rawLineCount;
+        const int lineCount = state.lineCount;
 
         bool force_update = false;
         int new_screen_width, new_screen_height;
         get_screen_size(console_handle, &new_screen_width, &new_screen_height);
 
-        if (is_inactive()) {
+        if (is_inactive(lastMouse, &nextMouse)) {
             inactivity_counter += refresh_period_ms;
         } else {
             inactivity_counter = 0;
         }
+
+        lastMouse = nextMouse;
 
         if (_kbhit()) {
             const char c = _getch();
@@ -523,7 +629,10 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (inactivity_counter >= timeout_period_ms || manual_pause) {
+        const bool onTask = state.applicationFocused || state.toolFocused;
+
+        if (inactivity_counter >= timeout_period_ms || manual_pause ||
+            !onTask) {
             paused = true;
             inactivity_counter = min(inactivity_counter, timeout_period_ms);
         } else {
@@ -584,14 +693,15 @@ int main(int argc, char *argv[]) {
             draw_text(buffer, front, {1, 0}, default_color, &right_edge);
         }
 
-        draw_status_indicators(front, paused, inactivity_counter < 5000,
-                               is_inline, &lc,
+        draw_status_indicators(front, is_inline, paused, state,
+                               inactivity_counter < 1000,
                                {(SHORT) (right_edge + 1),
                                 (is_inline) ? (SHORT) 0 : (SHORT) 3});
 
         update_screen(console_handle, back, front, force_update);
 
-        save_timer_context(&context, &lc, lc.line_count != -1);
+        save_timer_context(&context, rawLineCount, lineCount, lineCount != -1,
+                           root_path);
 
         Sleep(refresh_period_ms);
     }

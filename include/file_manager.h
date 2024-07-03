@@ -1,29 +1,30 @@
 #ifndef ATG_CONSOLE_CLOCK_FILE_MANAGER_H
 #define ATG_CONSOLE_CLOCK_FILE_MANAGER_H
 
-#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
 
-struct line_count {
-    int raw_line_count;
-    int line_count;
+class Settings;
+class LineCounter {
+public:
+    LineCounter();
+    ~LineCounter();
+
+    void reset() { m_rawLineCount = m_lineCount = 0; }
+    void countLines(Settings *settings);
+
+    inline int rawLineCount() const { return m_rawLineCount; }
+    inline int lineCount() const { return m_lineCount; }
+
+private:
+    size_t readLine(std::fstream &stream, char **buffer, size_t bufferSize);
+    void countLines(std::string_view fname, Settings *settings);
+    void countLinesDirectory(std::string_view directory, Settings *settings);
+
+private:
+    int m_rawLineCount = 0;
+    int m_lineCount = 0;
 };
-
-struct lc_settings {
-    std::vector<std::string> file_extensions;
-    std::vector<std::string> directories;
-};
-
-void read_settings(lc_settings *settings, const char *fname);
-bool check_extension(lc_settings *settings, const std::string &ext);
-
-size_t read_line(std::istream &stream, char **buffer, size_t buffer_size);
-void init_line_count(line_count *lc);
-void count_lines(line_count *lc, const char *fname);
-void count_lines_dir(line_count *lc, lc_settings *settings,
-                     const char *directory);
-void count_all(line_count *lc, lc_settings *settings);
 
 #endif /* ATG_CONSOLE_CLOCK_FILE_MANAGER_H */

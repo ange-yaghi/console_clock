@@ -6,6 +6,9 @@
 
 #include <TlHelp32.h>
 
+#include <map>
+#include <string>
+
 struct ApplicationContext {
     Settings *settings = nullptr;
     bool running = false;
@@ -33,65 +36,85 @@ BOOL CALLBACK EnumThreadWndProc(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
-void enumerateProcess(DWORD processId, ApplicationContext *context) {
-    HANDLE process = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, processId);
-    THREADENTRY32 te;
-    te.dwSize = sizeof(te);
-    if (Thread32First(process, &te)) {
-        do {
-            if (te.dwSize >= FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID) +
-                                     sizeof(te.th32OwnerProcessID)) {
-                if (te.th32OwnerProcessID == processId) {
-                    ::EnumThreadWindows(te.th32ThreadID, ::EnumThreadWndProc,
-                                        reinterpret_cast<LPARAM>(context));
-                }
-            }
-            te.dwSize = sizeof(te);
-        } while (Thread32Next(process, &te));
-    }
-    CloseHandle(process);
-}
-
 ExecutableListener::ExecutableListener() {}
 ExecutableListener::~ExecutableListener() {}
 
 bool ExecutableListener::updateState(Settings *settings, State *state) {
-    PROCESSENTRY32 entry;
-    entry.dwSize = sizeof(PROCESSENTRY32);
+    std::map<DWORD, std::string> executables, tools;
+    std::map<DWORD, std::vector<DWORD>> threads;
 
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (Process32First(snapshot, &entry) == TRUE) {
-        do {
-            if (settings->executables().count(entry.szExeFile) > 0) {
-                state->executableRunning = true;
+    HANDLE snapshot =
+            CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPTHREAD, 0);
 
-                ApplicationContext context;
-                context.settings = settings;
-                enumerateProcess(entry.th32ProcessID, &context);
+    {
+        PROCESSENTRY32 entry;
+        entry.dwSize = sizeof(PROCESSENTRY32);
+        if (Process32First(snapshot, &entry) == TRUE) {
+            do {
+                if (settings->executables().count(entry.szExeFile) > 0) {
+                    executables.emplace(entry.th32ProcessID, entry.szExeFile);
+                    state->executableRunning = true;
+                } else if (settings->tools().count(entry.szExeFile) > 0) {
+                    tools.emplace(entry.th32ProcessID, entry.szExeFile);
+                }
+            } while (Process32Next(snapshot, &entry) == TRUE);
+        }
+    }
 
+    for (auto &process : executables) {
+        threads.emplace(process.first, std::vector<DWORD>());
+    }
+
+    for (auto &process : tools) {
+        threads.emplace(process.first, std::vector<DWORD>());
+    }
+
+    {
+        THREADENTRY32 te;
+        te.dwSize = sizeof(te);
+        if (Thread32First(snapshot, &te) == TRUE) {
+            do {
+                if (te.dwSize >=
+                    FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID) +
+                            sizeof(te.th32OwnerProcessID)) {
+                    if (threads.count(te.th32OwnerProcessID) > 0) {
+                        threads[te.th32OwnerProcessID].push_back(
+                                te.th32ThreadID);
+                    }
+                }
+                te.dwSize = sizeof(te);
+            } while (Thread32Next(snapshot, &te) == TRUE);
+        }
+    }
+
+    CloseHandle(snapshot);
+
+    for (auto &process : threads) {
+        for (auto &thread : process.second) {
+            ApplicationContext context;
+            context.settings = settings;
+            ::EnumThreadWindows(thread, ::EnumThreadWndProc,
+                                reinterpret_cast<LPARAM>(&context));
+
+            if (executables.count(process.first) > 0) {
                 if (context.focused) {
                     state->executableFocused = context.focused;
                 }
-            } else if (settings->tools().count(entry.szExeFile) > 0) {
-                ApplicationContext context;
-                context.settings = settings;
-                enumerateProcess(entry.th32ProcessID, &context);
-
+            } else if (tools.count(process.first) > 0) {
                 if (!state->toolRunning && context.running) {
                     state->toolRunning = true;
-                    state->toolName = entry.szExeFile;
+                    state->toolName = tools[process.first];
                 }
 
                 if (!state->toolFocused &&
                     (context.focused && context.running)) {
                     state->toolFocused = true;
-                    state->toolName = entry.szExeFile;
+                    state->toolName = tools[process.first];
                 }
             }
-        } while (Process32Next(snapshot, &entry) == TRUE);
+        }
     }
 
-    CloseHandle(snapshot);
     return false;
 }
 

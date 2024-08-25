@@ -12,6 +12,7 @@ ConsoleClock.exe
 -Tools
 blender.exe
 devenv.exe
+chrome.exe
 
 -Keywords
 ConsoleClock

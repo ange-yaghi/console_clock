@@ -22,8 +22,8 @@ To use console clock, you have to copy the `console_clock` folder into the root 
 Here is an example `lc.txt`
 ```
 -Directories
-src
-include
+src/
+include/
 
 -Extensions
 .h
@@ -43,9 +43,13 @@ your-project-name
 ```
 
 Under `-Directories` you specify where your source files are.
+
 Under `-Extensions` you specify the extensions your source files use. (for example .c for a C source file)
+
 Under `-Executables` you specify the output executable of your project.
+
 Under `-Tools` you speficy the tools you are using. (for example devenv.exe for Visual Studio)
+
 Under `-Keywords` you specify your project name
 
 #### Step 5 - making Console Clock launch when you build your application (optional)

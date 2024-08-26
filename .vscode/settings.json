@@ -1,0 +1,7 @@
+{
+	"files.associations": {
+		"map": "cpp",
+		"mutex": "cpp",
+		"string_view": "cpp"
+	}
+}

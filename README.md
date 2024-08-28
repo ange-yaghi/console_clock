@@ -55,9 +55,9 @@ Under `-Keywords` you specify your project name
 #### Step 5 - making Console Clock launch when you build your application (optional)
 If you're building your project using CMake or batch scripts, you can launch the program every time you build your project.
 
-To do that, you need to create a batch script that will launch the application. Due to the nature of Windows batch scripts you need to use a run helper to not hang the build process. Here is an example batch script that will launch the application:
+To do that, you need to create a batch script that will launch the application. Due to the nature of Windows batch scripts ran by CMake you need to use a run helper to not hang the build process. Here is an example batch script that will launch the application:
 ```
-cd path/to/console_clock/bit
+cd path/to/console_clock/bin
 ConsoleClockRun.exe
 ```
 This script can then be executed via CMake, or directly from another batch scripts. Here is a CMake example
